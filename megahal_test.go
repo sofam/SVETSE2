@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestMakeWords(t *testing.T) {
@@ -218,5 +219,112 @@ func TestLoadSwapList(t *testing.T) {
 	}
 	if swaps["I'M"] != "YOU'RE" {
 		t.Errorf("swaps[I'M] = %q, want YOU'RE", swaps["I'M"])
+	}
+}
+
+func TestMakeKeywords(t *testing.T) {
+	m := newModel(5)
+	ban := map[string]bool{"THE": true, "A": true, "IS": true}
+	aux := map[string]bool{"IT": true, "THIS": true}
+	swaps := map[string]string{"MY": "YOUR"}
+
+	m.addWord("HELLO")
+	m.addWord("WORLD")
+	m.addWord("THE")
+	m.addWord("IT")
+	m.addWord("MY")
+	m.addWord("YOUR")
+
+	tokens := makeWords("the hello world")
+	keys := m.makeKeywords(tokens, ban, aux, swaps)
+
+	found := make(map[string]bool)
+	for _, k := range keys {
+		found[k] = true
+	}
+	if found["THE"] {
+		t.Error("THE should be banned from keywords")
+	}
+	if !found["HELLO"] {
+		t.Error("HELLO should be a keyword")
+	}
+	if !found["WORLD"] {
+		t.Error("WORLD should be a keyword")
+	}
+}
+
+func TestMakeKeywordsSwap(t *testing.T) {
+	m := newModel(5)
+	ban := map[string]bool{}
+	aux := map[string]bool{}
+	swaps := map[string]string{"MY": "YOUR"}
+
+	m.addWord("MY")
+	m.addWord("YOUR")
+
+	tokens := makeWords("my cat")
+	keys := m.makeKeywords(tokens, ban, aux, swaps)
+
+	found := make(map[string]bool)
+	for _, k := range keys {
+		found[k] = true
+	}
+	if found["MY"] {
+		t.Error("MY should be swapped, not directly in keywords")
+	}
+	if !found["YOUR"] {
+		t.Error("YOUR should appear as keyword (swapped from MY)")
+	}
+}
+
+func TestGenerateReplyBasic(t *testing.T) {
+	m := newModel(5)
+	ban := map[string]bool{}
+	aux := map[string]bool{}
+	swaps := map[string]string{}
+
+	sentences := []string{
+		"The cat sat on the mat and looked at the birds",
+		"The dog ran through the park chasing the ball",
+		"Birds fly over the mountains and rivers below",
+		"The fish swam in the river under the bridge",
+		"Mountains rise above the clouds in the morning",
+		"The cat chased the dog around the park today",
+		"Rivers flow from the mountains to the sea below",
+		"The ball bounced over the fence into the garden",
+		"Gardens grow with flowers and trees in spring",
+		"The bridge crosses over the river near the park",
+	}
+	for _, s := range sentences {
+		m.learn(s)
+	}
+
+	cfg := GenerationConfig{
+		Temperature:  1.0,
+		SurpriseBias: 1.0,
+		ReplyTimeout: 1 * time.Second,
+	}
+
+	reply := m.generateReply("cat", ban, aux, swaps, cfg)
+	if reply == "" {
+		t.Error("generateReply returned empty string")
+	}
+	t.Logf("Reply: %s", reply)
+}
+
+func TestGenerateReplyEmptyBrain(t *testing.T) {
+	m := newModel(5)
+	ban := map[string]bool{}
+	aux := map[string]bool{}
+	swaps := map[string]string{}
+	cfg := GenerationConfig{
+		Temperature:  1.0,
+		SurpriseBias: 1.0,
+		ReplyTimeout: 500 * time.Millisecond,
+	}
+
+	reply := m.generateReply("hello", ban, aux, swaps, cfg)
+	if reply == "" {
+		t.Error("generateReply should return a fallback message for empty brain")
 	}
 }

@@ -2,11 +2,21 @@ package main
 
 import (
 	"bufio"
+	"math"
+	"math/rand"
 	"os"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
+
+// GenerationConfig controls reply generation behavior.
+type GenerationConfig struct {
+	Temperature  float64
+	SurpriseBias float64
+	ReplyTimeout time.Duration
+}
 
 // makeWords splits input into alternating word/separator tokens.
 // Words are sequences of letters (including apostrophes between letters)
@@ -290,4 +300,373 @@ func loadSwapList(path string) map[string]string {
 		}
 	}
 	return result
+}
+
+// makeKeywords extracts interesting keywords from tokens for use in reply generation.
+// Applies swaps, skips unknown/banned/aux/non-alphanumeric words.
+// If primary keywords were found, aux words that passed all other checks are appended.
+func (m *Model) makeKeywords(tokens []string, ban, aux map[string]bool, swaps map[string]string) []string {
+	seen := make(map[string]bool)
+	var primary []string
+	var secondary []string
+
+	for _, tok := range tokens {
+		// Apply swap if present.
+		word := strings.ToUpper(tok)
+		if sw, ok := swaps[word]; ok {
+			word = sw
+		}
+
+		// Skip if not in model dictionary (symbol 0 means unknown).
+		if m.findWord(word) == 0 {
+			continue
+		}
+
+		// First rune must be letter or digit.
+		r, _ := utf8.DecodeRuneInString(word)
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			continue
+		}
+
+		// Skip if banned.
+		if ban[word] {
+			continue
+		}
+
+		if seen[word] {
+			continue
+		}
+		seen[word] = true
+
+		if aux[word] {
+			secondary = append(secondary, word)
+		} else {
+			primary = append(primary, word)
+		}
+	}
+
+	// Only include aux words when there are primary keywords.
+	if len(primary) > 0 {
+		return append(primary, secondary...)
+	}
+	return primary
+}
+
+// seed picks an initial symbol for reply generation.
+// Tries keywords in order; falls back to a random child of Forward root.
+func (m *Model) seed(keys []string, aux map[string]bool) uint32 {
+	// Try to find a non-aux keyword present in the model.
+	for _, k := range keys {
+		if aux[k] {
+			continue
+		}
+		sym := m.findWord(k)
+		if sym != 0 {
+			return sym
+		}
+	}
+
+	// Fall back to a random child of the Forward root.
+	if len(m.Forward.Children) == 0 {
+		return 0
+	}
+	return m.Forward.Children[rand.Intn(len(m.Forward.Children))].Symbol
+}
+
+// babble selects the next symbol from the deepest available context node.
+// It uses weighted random selection with temperature, preferring keywords not yet in reply.
+func (m *Model) babble(keys []string, replyWords []string, aux map[string]bool, usedKey bool, temperature float64) (uint32, bool) {
+	// Find deepest non-nil context node that has children.
+	var node *Node
+	for i := m.Order + 1; i >= 0; i-- {
+		if m.Context[i] != nil && len(m.Context[i].Children) > 0 {
+			node = m.Context[i]
+			break
+		}
+	}
+	if node == nil || node.Usage == 0 {
+		return 0, usedKey
+	}
+
+	// Build a set of words already in the reply for quick lookup.
+	inReply := make(map[string]bool, len(replyWords))
+	for _, w := range replyWords {
+		inReply[w] = true
+	}
+
+	// Build a set of keywords for quick lookup.
+	keySet := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		keySet[k] = true
+	}
+
+	children := node.Children
+	count := len(children)
+
+	// Pick a random starting index.
+	start := rand.Intn(count)
+
+	// Compute total effective usage using temperature-adjusted counts.
+	effectiveTotal := 0.0
+	for _, child := range children {
+		effectiveTotal += math.Pow(float64(child.Count), 1.0/temperature)
+	}
+
+	// Pick a random threshold in [0, effectiveTotal).
+	threshold := rand.Float64() * effectiveTotal
+
+	// Walk circularly. If we encounter a keyword not yet in the reply, prefer it.
+	for i := 0; i < count; i++ {
+		child := children[(start+i)%count]
+		word := ""
+		if int(child.Symbol) < len(m.Dictionary) {
+			word = m.Dictionary[child.Symbol]
+		}
+
+		// If this is a keyword not yet used and not already in reply, use it.
+		if !usedKey && keySet[word] && !inReply[word] && !aux[word] {
+			return child.Symbol, true
+		}
+
+		eff := math.Pow(float64(child.Count), 1.0/temperature)
+		threshold -= eff
+		if threshold < 0 {
+			return child.Symbol, usedKey
+		}
+	}
+
+	// Fallback: return last child.
+	return children[(start+count-1)%count].Symbol, usedKey
+}
+
+// replyOnce generates a single candidate reply word list.
+func (m *Model) replyOnce(keys []string, aux map[string]bool, temperature float64) []string {
+	var reply []string
+
+	// Seed with a keyword.
+	seedSym := m.seed(keys, aux)
+	if seedSym == 0 {
+		return nil
+	}
+
+	// Forward pass: initialize context and walk forward.
+	m.initializeContext()
+	m.Context[0] = m.Forward
+	m.updateContext(seedSym)
+
+	word := m.Dictionary[seedSym]
+	reply = append(reply, word)
+
+	var usedKey bool
+	for i := 0; i < 1024; i++ {
+		sym, uk := m.babble(keys, reply, aux, usedKey, temperature)
+		usedKey = uk
+		if sym == 0 {
+			break
+		}
+		if int(sym) >= len(m.Dictionary) {
+			break
+		}
+		reply = append(reply, m.Dictionary[sym])
+		m.updateContext(sym)
+	}
+
+	// Backward pass: re-init backward context walking up to order words from reply start.
+	m.initializeContext()
+	m.Context[0] = m.Backward
+
+	seedIdx := 0
+	end := seedIdx + m.Order
+	if end > len(reply) {
+		end = len(reply)
+	}
+	for _, w := range reply[seedIdx:end] {
+		sym := m.findWord(w)
+		if sym == 0 {
+			break
+		}
+		m.updateContext(sym)
+	}
+
+	usedKey = false
+	for i := 0; i < 1024; i++ {
+		sym, uk := m.babble(keys, reply, aux, usedKey, temperature)
+		usedKey = uk
+		if sym == 0 {
+			break
+		}
+		if int(sym) >= len(m.Dictionary) {
+			break
+		}
+		// Prepend the new word.
+		reply = append([]string{m.Dictionary[sym]}, reply...)
+		m.updateContext(sym)
+	}
+
+	return reply
+}
+
+// evaluateReply computes a surprise score for the given word list relative to keywords.
+func (m *Model) evaluateReply(keys []string, words []string, surpriseBias float64) float64 {
+	if len(keys) == 0 || len(words) == 0 {
+		return 0
+	}
+
+	keySet := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		keySet[k] = true
+	}
+
+	num := len(words)
+	entropy := 0.0
+
+	// Forward pass.
+	m.initializeContext()
+	m.Context[0] = m.Forward
+	for _, w := range words {
+		sym := m.findWord(w)
+		if sym != 0 {
+			m.updateContext(sym)
+		}
+		if !keySet[w] {
+			continue
+		}
+		// Compute probability across context levels.
+		prob := 0.0
+		count := 0
+		for i := 1; i <= m.Order+1; i++ {
+			ctx := m.Context[i]
+			if ctx == nil {
+				continue
+			}
+			child := findSymbol(ctx, sym)
+			if child == nil || ctx.Usage == 0 {
+				continue
+			}
+			prob += float64(child.Count) / float64(ctx.Usage)
+			count++
+		}
+		if count > 0 && prob > 0 {
+			entropy -= math.Log(prob / float64(count))
+		}
+	}
+
+	// Backward pass.
+	m.initializeContext()
+	m.Context[0] = m.Backward
+	for i := len(words) - 1; i >= 0; i-- {
+		w := words[i]
+		sym := m.findWord(w)
+		if sym != 0 {
+			m.updateContext(sym)
+		}
+		if !keySet[w] {
+			continue
+		}
+		prob := 0.0
+		count := 0
+		for j := 1; j <= m.Order+1; j++ {
+			ctx := m.Context[j]
+			if ctx == nil {
+				continue
+			}
+			child := findSymbol(ctx, sym)
+			if child == nil || ctx.Usage == 0 {
+				continue
+			}
+			prob += float64(child.Count) / float64(ctx.Usage)
+			count++
+		}
+		if count > 0 && prob > 0 {
+			entropy -= math.Log(prob / float64(count))
+		}
+	}
+
+	// Dampen for long replies.
+	if num >= 8 {
+		entropy /= math.Sqrt(float64(num - 1))
+	}
+	if num >= 16 {
+		entropy /= float64(num)
+	}
+
+	return math.Pow(math.Abs(entropy), surpriseBias)
+}
+
+// dissimilar returns true if word lists a and b differ.
+func dissimilar(a, b []string) bool {
+	if len(a) != len(b) {
+		return true
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return true
+		}
+	}
+	return false
+}
+
+// makeOutput joins words and capitalizes the first letter after sentence-ending punctuation.
+func makeOutput(words []string) string {
+	if len(words) == 0 {
+		return ""
+	}
+	result := strings.Join(words, "")
+
+	// Capitalize: find first letter and capitalize it, then capitalize after .!?
+	runes := []rune(result)
+	capitalize := true
+	for i, r := range runes {
+		if capitalize && unicode.IsLetter(r) {
+			runes[i] = unicode.ToUpper(r)
+			capitalize = false
+		}
+		if r == '.' || r == '!' || r == '?' {
+			capitalize = true
+		}
+	}
+	return string(runes)
+}
+
+// generateReply is the main entry point for reply generation.
+// It extracts keywords, runs a timed loop generating candidates, and returns the highest-scoring one.
+func (m *Model) generateReply(input string, ban, aux map[string]bool, swaps map[string]string, cfg GenerationConfig) string {
+	const fallback = "I don't know enough to answer you yet!"
+
+	tokens := makeWords(input)
+	keys := m.makeKeywords(tokens, ban, aux, swaps)
+
+	// Fail fast if the model is essentially empty.
+	if len(m.Forward.Children) == 0 {
+		return fallback
+	}
+
+	deadline := time.Now().Add(cfg.ReplyTimeout)
+
+	var bestWords []string
+	bestScore := -1.0
+	var lastWords []string
+
+	for time.Now().Before(deadline) {
+		candidate := m.replyOnce(keys, aux, cfg.Temperature)
+		if len(candidate) == 0 {
+			continue
+		}
+		// Skip if identical to the last generated candidate.
+		if lastWords != nil && !dissimilar(lastWords, candidate) {
+			continue
+		}
+		lastWords = candidate
+
+		score := m.evaluateReply(keys, candidate, cfg.SurpriseBias)
+		if bestWords == nil || score > bestScore {
+			bestScore = score
+			bestWords = candidate
+		}
+	}
+
+	if len(bestWords) == 0 {
+		return fallback
+	}
+	return makeOutput(bestWords)
 }
