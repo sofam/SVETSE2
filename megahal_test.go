@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -326,5 +327,68 @@ func TestGenerateReplyEmptyBrain(t *testing.T) {
 	reply := m.generateReply("hello", ban, aux, swaps, cfg)
 	if reply == "" {
 		t.Error("generateReply should return a fallback message for empty brain")
+	}
+}
+
+func TestParseOverrides(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantText string
+		wantKV   map[string]string
+		wantHelp bool
+	}{
+		{"no overrides", "hello world", "hello world", map[string]string{}, false},
+		{"chaos override", "hello !CHAOS=1.5 world", "hello world", map[string]string{"CHAOS": "1.5"}, false},
+		{"multiple overrides", "test !TEMPERATURE=2.0 !TIMEOUT=5s message", "test message", map[string]string{"TEMPERATURE": "2.0", "TIMEOUT": "5s"}, false},
+		{"help flag", "!HELP", "", map[string]string{}, true},
+		{"help with other text", "hello !HELP world", "hello world", map[string]string{}, true},
+		{"case insensitive keys", "test !chaos=2.0", "test", map[string]string{"CHAOS": "2.0"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			text, kv, help := parseOverrides(tt.input)
+			text = strings.TrimSpace(text)
+			if text != tt.wantText {
+				t.Errorf("text = %q, want %q", text, tt.wantText)
+			}
+			if help != tt.wantHelp {
+				t.Errorf("help = %v, want %v", help, tt.wantHelp)
+			}
+			for k, v := range tt.wantKV {
+				if kv[k] != v {
+					t.Errorf("kv[%q] = %q, want %q", k, kv[k], v)
+				}
+			}
+		})
+	}
+}
+
+func TestApplyOverrides(t *testing.T) {
+	base := GenerationConfig{
+		Temperature:  1.0,
+		SurpriseBias: 1.0,
+		ReplyTimeout: 2 * time.Second,
+	}
+	cfg := applyOverrides(base, map[string]string{"CHAOS": "2.5"})
+	if cfg.Temperature != 2.5 {
+		t.Errorf("Temperature = %f, want 2.5", cfg.Temperature)
+	}
+	if cfg.SurpriseBias != 2.5 {
+		t.Errorf("SurpriseBias = %f, want 2.5", cfg.SurpriseBias)
+	}
+
+	cfg = applyOverrides(base, map[string]string{"CHAOS": "2.0", "TEMPERATURE": "3.0"})
+	if cfg.Temperature != 3.0 {
+		t.Errorf("Temperature = %f, want 3.0", cfg.Temperature)
+	}
+	if cfg.SurpriseBias != 2.0 {
+		t.Errorf("SurpriseBias = %f, want 2.0", cfg.SurpriseBias)
+	}
+
+	cfg = applyOverrides(base, map[string]string{"TIMEOUT": "60s"})
+	if cfg.ReplyTimeout != 30*time.Second {
+		t.Errorf("ReplyTimeout = %v, want 30s (capped)", cfg.ReplyTimeout)
 	}
 }

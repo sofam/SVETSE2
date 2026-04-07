@@ -5,6 +5,8 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -669,4 +671,52 @@ func (m *Model) generateReply(input string, ban, aux map[string]bool, swaps map[
 		return fallback
 	}
 	return makeOutput(bestWords)
+}
+
+var overrideRe = regexp.MustCompile(`(?i)!(CHAOS|TEMPERATURE|SURPRISE_BIAS|TIMEOUT|HELP)(?:=(\S+))?`)
+
+func parseOverrides(input string) (string, map[string]string, bool) {
+	kv := make(map[string]string)
+	help := false
+	cleaned := overrideRe.ReplaceAllStringFunc(input, func(match string) string {
+		sub := overrideRe.FindStringSubmatch(match)
+		key := strings.ToUpper(sub[1])
+		if key == "HELP" {
+			help = true
+		} else if sub[2] != "" {
+			kv[key] = sub[2]
+		}
+		return ""
+	})
+	cleaned = strings.Join(strings.Fields(cleaned), " ")
+	return cleaned, kv, help
+}
+
+func applyOverrides(base GenerationConfig, kv map[string]string) GenerationConfig {
+	cfg := base
+	if v, ok := kv["CHAOS"]; ok {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			cfg.Temperature = f
+			cfg.SurpriseBias = f
+		}
+	}
+	if v, ok := kv["TEMPERATURE"]; ok {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			cfg.Temperature = f
+		}
+	}
+	if v, ok := kv["SURPRISE_BIAS"]; ok {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			cfg.SurpriseBias = f
+		}
+	}
+	if v, ok := kv["TIMEOUT"]; ok {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			if d > 30*time.Second {
+				d = 30 * time.Second
+			}
+			cfg.ReplyTimeout = d
+		}
+	}
+	return cfg
 }
