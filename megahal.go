@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"os"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -248,4 +250,44 @@ func (m *Model) learn(input string) {
 		m.updateModel(symbols[i])
 	}
 	m.updateModel(0) // sentence boundary
+}
+
+// loadWordList loads a file with one word per line into a set.
+func loadWordList(path string) map[string]bool {
+	result := make(map[string]bool)
+	f, err := os.Open(path)
+	if err != nil {
+		return result
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" {
+			result[strings.ToUpper(line)] = true
+		}
+	}
+	return result
+}
+
+// loadSwapList loads a swap file (pairs of lines: from, to).
+func loadSwapList(path string) map[string]string {
+	result := make(map[string]string)
+	f, err := os.Open(path)
+	if err != nil {
+		return result
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		from := strings.TrimSpace(strings.ToUpper(scanner.Text()))
+		if !scanner.Scan() {
+			break
+		}
+		to := strings.TrimSpace(strings.ToUpper(scanner.Text()))
+		if from != "" && to != "" {
+			result[from] = to
+		}
+	}
+	return result
 }

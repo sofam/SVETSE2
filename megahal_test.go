@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"testing"
 )
 
@@ -170,5 +171,52 @@ func TestLearnShortInput(t *testing.T) {
 	// "Hi" -> tokens: HI, "." -> 2 tokens, which is <= order 5, so skipped
 	if len(m.Forward.Children) != 0 {
 		t.Error("Short input should not be learned")
+	}
+}
+
+func TestLoadWordList(t *testing.T) {
+	f, err := os.CreateTemp("", "ban-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	f.WriteString("THE\nA\nIS\n")
+	f.Close()
+	words := loadWordList(f.Name())
+	if len(words) != 3 {
+		t.Fatalf("loadWordList got %d words, want 3", len(words))
+	}
+	if !words["THE"] || !words["A"] || !words["IS"] {
+		t.Errorf("unexpected words: %v", words)
+	}
+}
+
+func TestLoadWordListMissing(t *testing.T) {
+	words := loadWordList("/nonexistent/file.txt")
+	if words == nil {
+		t.Error("missing file should return empty map, not nil")
+	}
+	if len(words) != 0 {
+		t.Errorf("missing file should return empty map, got %d entries", len(words))
+	}
+}
+
+func TestLoadSwapList(t *testing.T) {
+	f, err := os.CreateTemp("", "swp-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	f.WriteString("MY\nYOUR\nI'M\nYOU'RE\n")
+	f.Close()
+	swaps := loadSwapList(f.Name())
+	if len(swaps) != 2 {
+		t.Fatalf("loadSwapList got %d pairs, want 2", len(swaps))
+	}
+	if swaps["MY"] != "YOUR" {
+		t.Errorf("swaps[MY] = %q, want YOUR", swaps["MY"])
+	}
+	if swaps["I'M"] != "YOU'RE" {
+		t.Errorf("swaps[I'M] = %q, want YOU'RE", swaps["I'M"])
 	}
 }
