@@ -73,3 +73,71 @@ func TestMakeWords(t *testing.T) {
 		})
 	}
 }
+
+func TestNewModel(t *testing.T) {
+	m := newModel(5)
+	if m.Order != 5 {
+		t.Errorf("Order = %d, want 5", m.Order)
+	}
+	if len(m.Dictionary) != 1 {
+		t.Errorf("Dictionary should have 1 entry (boundary), got %d", len(m.Dictionary))
+	}
+	if m.Dictionary[0] != "" {
+		t.Errorf("Dictionary[0] = %q, want %q", m.Dictionary[0], "")
+	}
+}
+
+func TestAddAndFindWord(t *testing.T) {
+	m := newModel(5)
+	id1 := m.addWord("HELLO")
+	if id1 != 1 {
+		t.Errorf("first addWord = %d, want 1", id1)
+	}
+	id2 := m.addWord("HELLO")
+	if id2 != id1 {
+		t.Errorf("duplicate addWord = %d, want %d", id2, id1)
+	}
+	found := m.findWord("HELLO")
+	if found != id1 {
+		t.Errorf("findWord(HELLO) = %d, want %d", found, id1)
+	}
+	found = m.findWord("NOPE")
+	if found != 0 {
+		t.Errorf("findWord(NOPE) = %d, want 0", found)
+	}
+	id3 := m.addWord("WORLD")
+	if id3 != 2 {
+		t.Errorf("second addWord = %d, want 2", id3)
+	}
+}
+
+func TestAddSymbol(t *testing.T) {
+	node := newNode()
+	child := addSymbol(node, 5)
+	if child.Symbol != 5 {
+		t.Errorf("child.Symbol = %d, want 5", child.Symbol)
+	}
+	if child.Count != 1 {
+		t.Errorf("child.Count = %d, want 1", child.Count)
+	}
+	if node.Usage != 1 {
+		t.Errorf("node.Usage = %d, want 1", node.Usage)
+	}
+	child2 := addSymbol(node, 5)
+	if child2 != child {
+		t.Error("should return the same child node")
+	}
+	if child.Count != 2 {
+		t.Errorf("child.Count = %d, want 2", child.Count)
+	}
+	child3 := addSymbol(node, 3)
+	if child3.Symbol != 3 {
+		t.Errorf("child3.Symbol = %d, want 3", child3.Symbol)
+	}
+	if len(node.Children) != 2 {
+		t.Errorf("len(Children) = %d, want 2", len(node.Children))
+	}
+	if node.Children[0].Symbol != 3 || node.Children[1].Symbol != 5 {
+		t.Errorf("Children not sorted: [%d, %d]", node.Children[0].Symbol, node.Children[1].Symbol)
+	}
+}
