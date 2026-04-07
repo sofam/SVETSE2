@@ -141,3 +141,34 @@ func TestAddSymbol(t *testing.T) {
 		t.Errorf("Children not sorted: [%d, %d]", node.Children[0].Symbol, node.Children[1].Symbol)
 	}
 }
+
+func TestLearn(t *testing.T) {
+	m := newModel(5)
+	m.learn("Hello world")
+	// "Hello world" -> tokens: HELLO, " ", WORLD, "." -> 4 tokens, dictionary: "", HELLO, " ", WORLD, "."
+	if len(m.Dictionary) != 5 {
+		t.Fatalf("Dictionary size = %d, want 5, got %v", len(m.Dictionary), m.Dictionary)
+	}
+	if len(m.Forward.Children) == 0 {
+		t.Error("Forward tree has no children after learning")
+	}
+	if len(m.Backward.Children) == 0 {
+		t.Error("Backward tree has no children after learning")
+	}
+	m.learn("Hello world")
+	if len(m.Dictionary) != 5 {
+		t.Errorf("Dictionary size after re-learn = %d, want 5", len(m.Dictionary))
+	}
+	if m.Forward.Usage < 2 {
+		t.Errorf("Forward.Usage = %d, want >= 2", m.Forward.Usage)
+	}
+}
+
+func TestLearnShortInput(t *testing.T) {
+	m := newModel(5)
+	m.learn("Hi")
+	// "Hi" -> tokens: HI, "." -> 2 tokens, which is <= order 5, so skipped
+	if len(m.Forward.Children) != 0 {
+		t.Error("Short input should not be learned")
+	}
+}

@@ -194,3 +194,58 @@ func addSymbol(node *Node, symbol uint32) *Node {
 	node.Usage++
 	return child
 }
+
+// initializeContext resets all context slots to nil.
+func (m *Model) initializeContext() {
+	for i := range m.Context {
+		m.Context[i] = nil
+	}
+}
+
+// updateModel updates the context tree with a symbol (adding nodes).
+func (m *Model) updateModel(symbol uint32) {
+	for i := m.Order + 1; i > 0; i-- {
+		if m.Context[i-1] != nil {
+			m.Context[i] = addSymbol(m.Context[i-1], symbol)
+		}
+	}
+}
+
+// updateContext updates the context tree with a symbol (read-only traversal).
+func (m *Model) updateContext(symbol uint32) {
+	for i := m.Order + 1; i > 0; i-- {
+		if m.Context[i-1] != nil {
+			m.Context[i] = findSymbol(m.Context[i-1], symbol)
+		}
+	}
+}
+
+// learn tokenizes the input and trains both forward and backward trees.
+// Sentences with fewer than 3 tokens (word + separator + punctuation) are skipped.
+func (m *Model) learn(input string) {
+	tokens := makeWords(input)
+	if len(tokens) < 3 {
+		return
+	}
+
+	symbols := make([]uint32, len(tokens))
+	for i, tok := range tokens {
+		symbols[i] = m.addWord(tok)
+	}
+
+	// Train forward
+	m.initializeContext()
+	m.Context[0] = m.Forward
+	for _, sym := range symbols {
+		m.updateModel(sym)
+	}
+	m.updateModel(0) // sentence boundary
+
+	// Train backward
+	m.initializeContext()
+	m.Context[0] = m.Backward
+	for i := len(symbols) - 1; i >= 0; i-- {
+		m.updateModel(symbols[i])
+	}
+	m.updateModel(0) // sentence boundary
+}
