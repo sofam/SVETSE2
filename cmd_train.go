@@ -261,7 +261,7 @@ func fetchWikipediaText(lang, articleName string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("User-Agent", "SVETSE2/1.0 (MegaHAL chatbot trainer; https://github.com/oscelf/svetse2)")
+	req.Header.Set("User-Agent", "SVETSE2/1.0 (MegaHAL chatbot trainer; https://github.com/sofam/SVETSE2)")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
