@@ -156,6 +156,12 @@ func runModelGoroutine(cfg Config, learnCh <-chan LearnRequest, replyCh <-chan R
 }
 
 func main() {
+	// Subcommand routing
+	if len(os.Args) > 1 && os.Args[1] == "train" {
+		runTrain(os.Args[2:])
+		return
+	}
+
 	cfg := loadConfig()
 
 	if cfg.SlackToken == "" && cfg.DiscordToken == "" {
