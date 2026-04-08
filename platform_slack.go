@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 	"regexp"
 	"strings"
 
@@ -23,7 +24,7 @@ func cleanSlackText(text string) string {
 
 func runSlack(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyRequest, helpCh chan<- HelpRequest, trainCh chan<- TrainRequest) {
 	api := slack.New(cfg.SlackToken, slack.OptionAppLevelToken(cfg.SlackAppToken))
-	client := socketmode.New(api)
+	client := socketmode.New(api, socketmode.OptionDebug(true), socketmode.OptionLog(log.New(os.Stderr, "socketmode: ", log.Lshortfile|log.LstdFlags)))
 
 	authResp, err := api.AuthTest()
 	if err != nil {
@@ -40,36 +41,49 @@ func runSlack(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyReque
 
 	go func() {
 		for evt := range client.Events {
+			log.Printf("Slack event: type=%s", evt.Type)
 			switch evt.Type {
 			case socketmode.EventTypeEventsAPI:
 				eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
 				if !ok {
+					log.Printf("Slack: failed to cast EventsAPI event")
 					continue
 				}
 				client.Ack(*evt.Request)
+				log.Printf("Slack: EventsAPI type=%s innerType=%s", eventsAPIEvent.Type, eventsAPIEvent.InnerEvent.Type)
 
 				switch ev := eventsAPIEvent.InnerEvent.Data.(type) {
 				case *slackevents.MessageEvent:
+					// Only use MessageEvent for learning from non-mention messages.
+					// Mentions are handled by AppMentionEvent to avoid double-processing.
 					if ev.BotID != "" || ev.SubType != "" {
 						continue
 					}
-
-					isMention := strings.Contains(ev.Text, mentionTag)
-
-					if !isMention {
-						cleaned := cleanSlackText(ev.Text)
-						if cleaned != "" {
-							learnCh <- LearnRequest{Text: cleaned}
-						}
+					if strings.Contains(ev.Text, mentionTag) {
 						continue
 					}
+					// Skip quoted messages (blockquotes)
+					if strings.HasPrefix(ev.Text, "&gt;") || strings.HasPrefix(ev.Text, ">") {
+						continue
+					}
+					cleaned := cleanSlackText(ev.Text)
+					if cleaned != "" {
+						learnCh <- LearnRequest{Text: cleaned}
+					}
+				case *slackevents.AppMentionEvent:
+					log.Printf("Slack: AppMentionEvent user=%s text=%q channel=%s", ev.User, ev.Text, ev.Channel)
 
 					// Check channel allowlist
 					if len(allowedChannels) > 0 && !allowedChannels[ev.Channel] {
 						info, err := api.GetConversationInfo(&slack.GetConversationInfoInput{
 							ChannelID: ev.Channel,
 						})
-						if err != nil || !allowedChannels[info.Name] {
+						if err != nil {
+							log.Printf("Slack: GetConversationInfo failed for %s: %v", ev.Channel, err)
+							continue
+						}
+						if !allowedChannels[info.Name] {
+							log.Printf("Slack: channel %q (%s) not in allowlist", info.Name, ev.Channel)
 							continue
 						}
 					}
@@ -101,6 +115,9 @@ func runSlack(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyReque
 					replyCh <- ReplyRequest{Text: parsed.Text, Overrides: parsed.Overrides, ReplyCh: rc}
 					reply := <-rc
 					api.PostMessage(ev.Channel, slack.MsgOptionText(reply, false))
+
+				default:
+					log.Printf("Slack: unhandled inner event type: %T", eventsAPIEvent.InnerEvent.Data)
 				}
 
 			case socketmode.EventTypeConnecting:
@@ -109,6 +126,8 @@ func runSlack(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyReque
 				log.Println("Slack: connected")
 			case socketmode.EventTypeConnectionError:
 				log.Println("Slack: connection error")
+			default:
+				log.Printf("Slack: unhandled event type: %s", evt.Type)
 			}
 		}
 	}()

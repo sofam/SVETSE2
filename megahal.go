@@ -613,18 +613,18 @@ func makeOutput(words []string) string {
 	if len(words) == 0 {
 		return ""
 	}
-	result := strings.Join(words, "")
+	result := strings.ToLower(strings.Join(words, ""))
 
-	// Capitalize: find first letter and capitalize it, then capitalize after .!?
+	// Capitalize first letter and after sentence-ending punctuation
 	runes := []rune(result)
-	capitalize := true
+	capsNext := true
 	for i, r := range runes {
-		if capitalize && unicode.IsLetter(r) {
+		if capsNext && unicode.IsLetter(r) {
 			runes[i] = unicode.ToUpper(r)
-			capitalize = false
+			capsNext = false
 		}
 		if r == '.' || r == '!' || r == '?' {
-			capitalize = true
+			capsNext = true
 		}
 	}
 	return string(runes)
