@@ -613,7 +613,20 @@ func makeOutput(words []string) string {
 	if len(words) == 0 {
 		return ""
 	}
-	result := strings.ToLower(strings.Join(words, ""))
+	// Join tokens, inserting a space between adjacent word tokens
+	// to prevent "coldpenis" when the chain produces two words in a row
+	var b strings.Builder
+	for i, w := range words {
+		if i > 0 && len(w) > 0 && len(words[i-1]) > 0 {
+			prevLast, _ := utf8.DecodeLastRuneInString(words[i-1])
+			curFirst, _ := utf8.DecodeRuneInString(w)
+			if isWordRune(prevLast) && isWordRune(curFirst) {
+				b.WriteByte(' ')
+			}
+		}
+		b.WriteString(w)
+	}
+	result := strings.ToLower(b.String())
 
 	// Capitalize first letter and after sentence-ending punctuation
 	runes := []rune(result)
