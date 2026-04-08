@@ -95,19 +95,41 @@ func TestSplitSentences(t *testing.T) {
 
 func TestExtractWikiArticle(t *testing.T) {
 	tests := []struct {
-		url  string
-		want string
+		url      string
+		wantLang string
+		wantArt  string
 	}{
-		{"https://en.wikipedia.org/wiki/Albert_Einstein", "Albert_Einstein"},
-		{"https://en.wikipedia.org/wiki/Go_(programming_language)", "Go_(programming_language)"},
-		{"https://sv.wikipedia.org/wiki/Sverige", "Sverige"},
-		{"not-a-url", ""},
+		{"https://en.wikipedia.org/wiki/Albert_Einstein", "en", "Albert_Einstein"},
+		{"https://en.wikipedia.org/wiki/Go_(programming_language)", "en", "Go_(programming_language)"},
+		{"https://sv.wikipedia.org/wiki/Sverige", "sv", "Sverige"},
+		{"https://sv.wikipedia.org/wiki/Prinsesst%C3%A5rta", "sv", "Prinsesstårta"},
+		{"not-a-url", "", ""},
 	}
 
 	for _, tt := range tests {
-		got := extractWikiArticle(tt.url)
-		if got != tt.want {
-			t.Errorf("extractWikiArticle(%q) = %q, want %q", tt.url, got, tt.want)
+		lang, art := extractWikiArticle(tt.url)
+		if lang != tt.wantLang || art != tt.wantArt {
+			t.Errorf("extractWikiArticle(%q) = (%q, %q), want (%q, %q)",
+				tt.url, lang, art, tt.wantLang, tt.wantArt)
+		}
+	}
+}
+
+func TestParseWikiShorthand(t *testing.T) {
+	tests := []struct {
+		input    string
+		wantLang string
+		wantArt  string
+	}{
+		{"Gollum", "en", "Gollum"},
+		{"sv:Prinsesstårta", "sv", "Prinsesstårta"},
+		{"de:Bratwurst", "de", "Bratwurst"},
+	}
+	for _, tt := range tests {
+		lang, art := parseWikiShorthand(tt.input)
+		if lang != tt.wantLang || art != tt.wantArt {
+			t.Errorf("parseWikiShorthand(%q) = (%q, %q), want (%q, %q)",
+				tt.input, lang, art, tt.wantLang, tt.wantArt)
 		}
 	}
 }

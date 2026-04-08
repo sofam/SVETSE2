@@ -50,15 +50,15 @@ Options (via environment variables):
 
 		switch {
 		case strings.HasPrefix(source, "wiki:"):
-			articleName := strings.TrimPrefix(source, "wiki:")
-			sentences, err = trainFromWikipedia(model, articleName)
+			lang, articleName := parseWikiShorthand(strings.TrimPrefix(source, "wiki:"))
+			sentences, err = trainFromWikipedia(model, lang, articleName)
 		case isWikipediaURL(source):
-			articleName := extractWikiArticle(source)
+			lang, articleName := extractWikiArticle(source)
 			if articleName == "" {
 				log.Printf("Could not parse Wikipedia article from URL: %s", source)
 				continue
 			}
-			sentences, err = trainFromWikipedia(model, articleName)
+			sentences, err = trainFromWikipedia(model, lang, articleName)
 		default:
 			sentences, err = trainFromFile(model, source)
 		}
@@ -85,24 +85,33 @@ Options (via environment variables):
 
 // handleTrain processes a !TRAIN=URL request from chat. Runs in the model goroutine.
 func handleTrain(model *Model, source string) string {
-	var articleName string
+	var lang, articleName string
 	switch {
 	case strings.HasPrefix(source, "wiki:"):
-		articleName = strings.TrimPrefix(source, "wiki:")
+		lang, articleName = parseWikiShorthand(strings.TrimPrefix(source, "wiki:"))
 	case isWikipediaURL(source):
-		articleName = extractWikiArticle(source)
+		lang, articleName = extractWikiArticle(source)
 		if articleName == "" {
 			return fmt.Sprintf("Could not parse Wikipedia article from: %s", source)
 		}
 	default:
-		return "!TRAIN supports wiki:Article_Name or Wikipedia URLs"
+		return "!TRAIN supports wiki:Article_Name, wiki:sv:Article, or Wikipedia URLs"
 	}
 
-	count, err := trainFromWikipedia(model, articleName)
+	count, err := trainFromWikipedia(model, lang, articleName)
 	if err != nil {
 		return fmt.Sprintf("Training failed: %v", err)
 	}
-	return fmt.Sprintf("Trained %d sentences from %s. Brain now has %d words.", count, articleName, len(model.Dictionary))
+	return fmt.Sprintf("Trained %d sentences from %s:%s. Brain now has %d words.", count, lang, articleName, len(model.Dictionary))
+}
+
+// parseWikiShorthand parses "Article" or "sv:Article" into (lang, article).
+func parseWikiShorthand(s string) (string, string) {
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) == 2 && len(parts[0]) <= 3 {
+		return parts[0], parts[1]
+	}
+	return "en", s
 }
 
 // trainFromFile reads a text file and learns each non-empty line.
@@ -132,26 +141,32 @@ func isWikipediaURL(s string) bool {
 	return strings.Contains(s, "wikipedia.org/wiki/")
 }
 
-func extractWikiArticle(rawURL string) string {
+// extractWikiArticle returns (lang, article) from a Wikipedia URL.
+func extractWikiArticle(rawURL string) (string, string) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	parts := strings.SplitN(u.Path, "/wiki/", 2)
 	if len(parts) != 2 {
-		return ""
+		return "", ""
 	}
-	// Decode percent-encoding
 	article, err := url.PathUnescape(parts[1])
 	if err != nil {
-		return parts[1]
+		article = parts[1]
 	}
-	return article
+	// Extract language from hostname: sv.wikipedia.org -> sv
+	lang := "en"
+	hostParts := strings.Split(u.Hostname(), ".")
+	if len(hostParts) >= 3 && hostParts[1] == "wikipedia" {
+		lang = hostParts[0]
+	}
+	return lang, article
 }
 
 // trainFromWikipedia fetches a Wikipedia article's plain text and learns from it.
-func trainFromWikipedia(model *Model, articleName string) (int, error) {
-	text, err := fetchWikipediaText(articleName)
+func trainFromWikipedia(model *Model, lang, articleName string) (int, error) {
+	text, err := fetchWikipediaText(lang, articleName)
 	if err != nil {
 		return 0, err
 	}
@@ -172,10 +187,10 @@ func trainFromWikipedia(model *Model, articleName string) (int, error) {
 }
 
 // fetchWikipediaText fetches the plain text extract of a Wikipedia article using the API.
-func fetchWikipediaText(articleName string) (string, error) {
+func fetchWikipediaText(lang, articleName string) (string, error) {
 	apiURL := fmt.Sprintf(
-		"https://en.wikipedia.org/w/api.php?action=query&titles=%s&prop=extracts&explaintext=true&format=json",
-		url.QueryEscape(articleName),
+		"https://%s.wikipedia.org/w/api.php?action=query&titles=%s&prop=extracts&explaintext=true&format=json",
+		lang, url.QueryEscape(articleName),
 	)
 
 	req, err := http.NewRequest("GET", apiURL, nil)
