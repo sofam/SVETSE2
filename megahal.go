@@ -673,23 +673,37 @@ func (m *Model) generateReply(input string, ban, aux map[string]bool, swaps map[
 	return makeOutput(bestWords)
 }
 
-var overrideRe = regexp.MustCompile(`(?i)!(CHAOS|TEMPERATURE|SURPRISE_BIAS|TIMEOUT|HELP)(?:=(\S+))?`)
+var overrideRe = regexp.MustCompile(`(?i)!(CHAOS|TEMPERATURE|SURPRISE_BIAS|TIMEOUT|HELP|TRAIN)(?:=(\S+))?`)
 
-func parseOverrides(input string) (string, map[string]string, bool) {
-	kv := make(map[string]string)
-	help := false
+// ParsedMessage holds the result of parsing overrides from a message.
+type ParsedMessage struct {
+	Text      string
+	Overrides map[string]string
+	Help      bool
+	TrainURL  string // non-empty if !TRAIN=URL was found
+}
+
+func parseOverrides(input string) ParsedMessage {
+	result := ParsedMessage{Overrides: make(map[string]string)}
 	cleaned := overrideRe.ReplaceAllStringFunc(input, func(match string) string {
 		sub := overrideRe.FindStringSubmatch(match)
 		key := strings.ToUpper(sub[1])
-		if key == "HELP" {
-			help = true
-		} else if sub[2] != "" {
-			kv[key] = sub[2]
+		switch key {
+		case "HELP":
+			result.Help = true
+		case "TRAIN":
+			if sub[2] != "" {
+				result.TrainURL = sub[2]
+			}
+		default:
+			if sub[2] != "" {
+				result.Overrides[key] = sub[2]
+			}
 		}
 		return ""
 	})
-	cleaned = strings.Join(strings.Fields(cleaned), " ")
-	return cleaned, kv, help
+	result.Text = strings.Join(strings.Fields(cleaned), " ")
+	return result
 }
 
 func applyOverrides(base GenerationConfig, kv map[string]string) GenerationConfig {

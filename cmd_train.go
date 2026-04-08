@@ -83,6 +83,28 @@ Options (via environment variables):
 	log.Printf("Brain saved: %d words in dictionary, %d sentences trained", len(model.Dictionary), totalSentences)
 }
 
+// handleTrain processes a !TRAIN=URL request from chat. Runs in the model goroutine.
+func handleTrain(model *Model, source string) string {
+	var articleName string
+	switch {
+	case strings.HasPrefix(source, "wiki:"):
+		articleName = strings.TrimPrefix(source, "wiki:")
+	case isWikipediaURL(source):
+		articleName = extractWikiArticle(source)
+		if articleName == "" {
+			return fmt.Sprintf("Could not parse Wikipedia article from: %s", source)
+		}
+	default:
+		return "!TRAIN supports wiki:Article_Name or Wikipedia URLs"
+	}
+
+	count, err := trainFromWikipedia(model, articleName)
+	if err != nil {
+		return fmt.Sprintf("Training failed: %v", err)
+	}
+	return fmt.Sprintf("Trained %d sentences from %s. Brain now has %d words.", count, articleName, len(model.Dictionary))
+}
+
 // trainFromFile reads a text file and learns each non-empty line.
 func trainFromFile(model *Model, path string) (int, error) {
 	f, err := os.Open(path)

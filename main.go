@@ -108,12 +108,17 @@ type HelpRequest struct {
 	ReplyCh chan string
 }
 
+type TrainRequest struct {
+	URL     string
+	ReplyCh chan string
+}
+
 func helpText(cfg GenerationConfig) string {
-	return fmt.Sprintf("SVETSE2 — MegaHAL Markov chain bot\n\nUsage: @bot <message> [!KEY=VALUE...]\n\nPer-message overrides:\n  !CHAOS=X          Combined chaos dial (default: %.1f)\n  !TEMPERATURE=X    Random walk temperature (default: %.1f)\n  !SURPRISE_BIAS=X  Surprise scoring exponent (default: %.1f)\n  !TIMEOUT=Xs       Reply generation time (default: %s, max: 30s)\n  !HELP             Show this message\n\nHigher CHAOS = wilder, more unhinged replies.",
+	return fmt.Sprintf("SVETSE2 — MegaHAL Markov chain bot\n\nUsage: @bot <message> [!KEY=VALUE...]\n\nPer-message overrides:\n  !CHAOS=X          Combined chaos dial (default: %.1f)\n  !TEMPERATURE=X    Random walk temperature (default: %.1f)\n  !SURPRISE_BIAS=X  Surprise scoring exponent (default: %.1f)\n  !TIMEOUT=Xs       Reply generation time (default: %s, max: 30s)\n  !TRAIN=URL        Train from Wikipedia (wiki:Article or full URL)\n  !HELP             Show this message\n\nHigher CHAOS = wilder, more unhinged replies.",
 		cfg.Temperature, cfg.Temperature, cfg.SurpriseBias, cfg.ReplyTimeout)
 }
 
-func runModelGoroutine(cfg Config, learnCh <-chan LearnRequest, replyCh <-chan ReplyRequest, helpCh <-chan HelpRequest, quit <-chan struct{}) {
+func runModelGoroutine(cfg Config, learnCh <-chan LearnRequest, replyCh <-chan ReplyRequest, helpCh <-chan HelpRequest, trainCh <-chan TrainRequest, quit <-chan struct{}) {
 	model := newModel(5)
 	ban := loadWordList(cfg.BanFile)
 	aux := loadWordList(cfg.AuxFile)
@@ -146,6 +151,8 @@ func runModelGoroutine(cfg Config, learnCh <-chan LearnRequest, replyCh <-chan R
 			req.ReplyCh <- reply
 		case req := <-helpCh:
 			req.ReplyCh <- helpText(cfg.DefaultConfig)
+		case req := <-trainCh:
+			req.ReplyCh <- handleTrain(model, req.URL)
 		case <-saveTicker.C:
 			save()
 		case <-quit:
@@ -171,17 +178,18 @@ func main() {
 	learnCh := make(chan LearnRequest, 100)
 	replyCh := make(chan ReplyRequest, 10)
 	helpCh := make(chan HelpRequest, 10)
+	trainCh := make(chan TrainRequest, 5)
 	quit := make(chan struct{})
 
-	go runModelGoroutine(cfg, learnCh, replyCh, helpCh, quit)
+	go runModelGoroutine(cfg, learnCh, replyCh, helpCh, trainCh, quit)
 
 	if cfg.SlackToken != "" {
-		go runSlack(cfg, learnCh, replyCh, helpCh)
+		go runSlack(cfg, learnCh, replyCh, helpCh, trainCh)
 		log.Println("Slack adapter started")
 	}
 
 	if cfg.DiscordToken != "" {
-		go runDiscord(cfg, learnCh, replyCh, helpCh)
+		go runDiscord(cfg, learnCh, replyCh, helpCh, trainCh)
 		log.Println("Discord adapter started")
 	}
 

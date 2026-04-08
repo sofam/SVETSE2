@@ -21,7 +21,7 @@ func cleanSlackText(text string) string {
 	return strings.TrimSpace(text)
 }
 
-func runSlack(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyRequest, helpCh chan<- HelpRequest) {
+func runSlack(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyRequest, helpCh chan<- HelpRequest, trainCh chan<- TrainRequest) {
 	api := slack.New(cfg.SlackToken, slack.OptionAppLevelToken(cfg.SlackAppToken))
 	client := socketmode.New(api)
 
@@ -75,9 +75,9 @@ func runSlack(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyReque
 					}
 
 					text := cleanSlackText(ev.Text)
-					text, overrides, isHelp := parseOverrides(text)
+					parsed := parseOverrides(text)
 
-					if isHelp {
+					if parsed.Help {
 						rc := make(chan string, 1)
 						helpCh <- HelpRequest{ReplyCh: rc}
 						reply := <-rc
@@ -85,12 +85,20 @@ func runSlack(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyReque
 						continue
 					}
 
-					if strings.TrimSpace(text) == "" {
+					if parsed.TrainURL != "" {
+						rc := make(chan string, 1)
+						trainCh <- TrainRequest{URL: parsed.TrainURL, ReplyCh: rc}
+						reply := <-rc
+						api.PostMessage(ev.Channel, slack.MsgOptionText(reply, false))
+						continue
+					}
+
+					if strings.TrimSpace(parsed.Text) == "" {
 						continue
 					}
 
 					rc := make(chan string, 1)
-					replyCh <- ReplyRequest{Text: text, Overrides: overrides, ReplyCh: rc}
+					replyCh <- ReplyRequest{Text: parsed.Text, Overrides: parsed.Overrides, ReplyCh: rc}
 					reply := <-rc
 					api.PostMessage(ev.Channel, slack.MsgOptionText(reply, false))
 				}

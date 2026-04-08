@@ -16,7 +16,7 @@ func cleanDiscordText(text string) string {
 	return strings.TrimSpace(text)
 }
 
-func runDiscord(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyRequest, helpCh chan<- HelpRequest) {
+func runDiscord(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyRequest, helpCh chan<- HelpRequest, trainCh chan<- TrainRequest) {
 	dg, err := discordgo.New("Bot " + cfg.DiscordToken)
 	if err != nil {
 		log.Fatalf("Discord session error: %v", err)
@@ -61,9 +61,9 @@ func runDiscord(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyReq
 		}
 
 		text := cleanDiscordText(m.Content)
-		text, overrides, isHelp := parseOverrides(text)
+		parsed := parseOverrides(text)
 
-		if isHelp {
+		if parsed.Help {
 			rc := make(chan string, 1)
 			helpCh <- HelpRequest{ReplyCh: rc}
 			reply := <-rc
@@ -71,12 +71,20 @@ func runDiscord(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyReq
 			return
 		}
 
-		if strings.TrimSpace(text) == "" {
+		if parsed.TrainURL != "" {
+			rc := make(chan string, 1)
+			trainCh <- TrainRequest{URL: parsed.TrainURL, ReplyCh: rc}
+			reply := <-rc
+			s.ChannelMessageSend(m.ChannelID, reply)
+			return
+		}
+
+		if strings.TrimSpace(parsed.Text) == "" {
 			return
 		}
 
 		rc := make(chan string, 1)
-		replyCh <- ReplyRequest{Text: text, Overrides: overrides, ReplyCh: rc}
+		replyCh <- ReplyRequest{Text: parsed.Text, Overrides: parsed.Overrides, ReplyCh: rc}
 		reply := <-rc
 		s.ChannelMessageSend(m.ChannelID, reply)
 	})
