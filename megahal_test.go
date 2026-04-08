@@ -392,3 +392,63 @@ func TestApplyOverrides(t *testing.T) {
 		t.Errorf("ReplyTimeout = %v, want 30s (capped)", cfg.ReplyTimeout)
 	}
 }
+
+func TestFullRoundTrip(t *testing.T) {
+	m := newModel(5)
+	corpus := []string{
+		"The cat sat on the mat and looked around the room",
+		"The dog ran through the park and chased the birds away",
+		"Birds fly high over the mountains and rivers below",
+		"The fish swam in the river under the old stone bridge",
+		"Mountains rise above the clouds every single morning",
+		"The cat chased the dog around the park all afternoon",
+		"Rivers flow from the mountains down to the big sea",
+		"The ball bounced over the fence and into the garden",
+		"Gardens grow with beautiful flowers and tall trees",
+		"The bridge crosses over the wide river near the park",
+		"Every morning the sun rises over the distant mountains",
+		"The old stone bridge has been standing for many years",
+		"Cats and dogs are the most popular pets in the world",
+		"The park is full of trees and flowers in the spring",
+		"Fish swim upstream in the river during spawning season",
+	}
+	for i := 0; i < 10; i++ {
+		for _, s := range corpus {
+			m.learn(s)
+		}
+	}
+
+	dir := t.TempDir()
+	path := dir + "/test.brain"
+	if err := saveBrain(path, m); err != nil {
+		t.Fatalf("saveBrain: %v", err)
+	}
+
+	m2 := newModel(5)
+	if err := loadBrain(path, m2); err != nil {
+		t.Fatalf("loadBrain: %v", err)
+	}
+
+	ban := map[string]bool{"THE": true, "A": true, "AND": true}
+	aux := map[string]bool{}
+	swaps := map[string]string{}
+	cfg := GenerationConfig{
+		Temperature:  1.0,
+		SurpriseBias: 1.0,
+		ReplyTimeout: 1 * time.Second,
+	}
+
+	reply := m2.generateReply("cat park", ban, aux, swaps, cfg)
+	if reply == "" {
+		t.Error("no reply generated from loaded brain")
+	}
+	t.Logf("Reply from loaded brain: %s", reply)
+
+	cfg.Temperature = 3.0
+	cfg.SurpriseBias = 2.0
+	chaosReply := m2.generateReply("cat park", ban, aux, swaps, cfg)
+	if chaosReply == "" {
+		t.Error("no reply generated with high chaos")
+	}
+	t.Logf("High chaos reply: %s", chaosReply)
+}
