@@ -51,12 +51,28 @@ Options (via environment variables):
 		switch {
 		case strings.HasPrefix(source, "wiki:"):
 			lang, articleName := parseWikiShorthand(strings.TrimPrefix(source, "wiki:"))
+			if strings.EqualFold(articleName, "random") {
+				articleName, err = fetchRandomArticle(lang)
+				if err != nil {
+					log.Printf("Failed to get random article: %v", err)
+					continue
+				}
+				log.Printf("Random article: %s:%s", lang, articleName)
+			}
 			sentences, err = trainFromWikipedia(model, lang, articleName)
 		case isWikipediaURL(source):
 			lang, articleName := extractWikiArticle(source)
 			if articleName == "" {
 				log.Printf("Could not parse Wikipedia article from URL: %s", source)
 				continue
+			}
+			if strings.EqualFold(articleName, "random") {
+				articleName, err = fetchRandomArticle(lang)
+				if err != nil {
+					log.Printf("Failed to get random article: %v", err)
+					continue
+				}
+				log.Printf("Random article: %s:%s", lang, articleName)
 			}
 			sentences, err = trainFromWikipedia(model, lang, articleName)
 		default:
@@ -95,7 +111,16 @@ func handleTrain(model *Model, source string) string {
 			return fmt.Sprintf("Could not parse Wikipedia article from: %s", source)
 		}
 	default:
-		return "!TRAIN supports wiki:Article_Name, wiki:sv:Article, or Wikipedia URLs"
+		return "!TRAIN supports wiki:Article, wiki:sv:Article, wiki:random, wiki:sv:random, or Wikipedia URLs"
+	}
+
+	// Handle random article
+	if strings.EqualFold(articleName, "random") {
+		randomTitle, err := fetchRandomArticle(lang)
+		if err != nil {
+			return fmt.Sprintf("Failed to get random article: %v", err)
+		}
+		articleName = randomTitle
 	}
 
 	count, err := trainFromWikipedia(model, lang, articleName)
@@ -103,6 +128,40 @@ func handleTrain(model *Model, source string) string {
 		return fmt.Sprintf("Training failed: %v", err)
 	}
 	return fmt.Sprintf("Trained %d sentences from %s:%s. Brain now has %d words.", count, lang, articleName, len(model.Dictionary))
+}
+
+// fetchRandomArticle gets a random article title from Wikipedia.
+func fetchRandomArticle(lang string) (string, error) {
+	apiURL := fmt.Sprintf(
+		"https://%s.wikipedia.org/w/api.php?action=query&list=random&rnnamespace=0&rnlimit=1&format=json",
+		lang,
+	)
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "SVETSE2/1.0 (MegaHAL chatbot trainer; https://github.com/sofam/SVETSE2)")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Query struct {
+			Random []struct {
+				Title string `json:"title"`
+			} `json:"random"`
+		} `json:"query"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if len(result.Query.Random) == 0 {
+		return "", fmt.Errorf("no random article returned")
+	}
+	return result.Query.Random[0].Title, nil
 }
 
 // parseWikiShorthand parses "Article" or "sv:Article" into (lang, article).
@@ -142,6 +201,7 @@ func isWikipediaURL(s string) bool {
 }
 
 // extractWikiArticle returns (lang, article) from a Wikipedia URL.
+// Recognizes Special:Random / Special:Slumpsida etc. and returns "random".
 func extractWikiArticle(rawURL string) (string, string) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -160,6 +220,10 @@ func extractWikiArticle(rawURL string) (string, string) {
 	hostParts := strings.Split(u.Hostname(), ".")
 	if len(hostParts) >= 3 && hostParts[1] == "wikipedia" {
 		lang = hostParts[0]
+	}
+	// Map Special:Random pages to "random"
+	if strings.HasPrefix(article, "Special:") {
+		article = "random"
 	}
 	return lang, article
 }
