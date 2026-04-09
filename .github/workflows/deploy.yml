@@ -1,0 +1,41 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o svetse2-linux .
+
+      - name: Test
+        run: go test -count=1 ./...
+
+      - name: Deploy to server
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Upload new binary
+          scp -i ~/.ssh/deploy_key svetse2-linux megahal.ban "${SSH_USER}@${SSH_HOST}:~/svetse2/"
+
+          # Restart: kill old process, start new one
+          ssh -i ~/.ssh/deploy_key "${SSH_USER}@${SSH_HOST}" "bash ~/svetse2/start-svetse2.sh" || true
+
+          rm -f ~/.ssh/deploy_key
