@@ -22,17 +22,13 @@ jobs:
         run: go test -count=1 ./...
 
       - name: Stop running bot
+        continue-on-error: true
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script: |
-            if pgrep -f svetse2-linux > /dev/null 2>&1; then
-              kill $(pgrep -f svetse2-linux) 2>/dev/null
-              sleep 2
-            fi
-            echo "done"
+          script: killall svetse2-linux 2>/dev/null; sleep 2; echo ok
 
       - name: Upload binary
         uses: appleboy/scp-action@v0.1.7
