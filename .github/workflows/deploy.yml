@@ -32,10 +32,17 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-          # Upload new binary
-          scp -i ~/.ssh/deploy_key svetse2-linux megahal.ban "${SSH_USER}@${SSH_HOST}:~/svetse2/"
+          SSH="ssh -i ~/.ssh/deploy_key ${SSH_USER}@${SSH_HOST}"
+          SCP="scp -i ~/.ssh/deploy_key"
 
-          # Restart: kill old process, start new one
-          ssh -i ~/.ssh/deploy_key "${SSH_USER}@${SSH_HOST}" "bash ~/svetse2/start-svetse2.sh" || true
+          # Stop running process so binary can be overwritten
+          $SSH "pkill -f svetse2-linux || true"
+          sleep 2
+
+          # Upload new binary and ban list
+          $SCP svetse2-linux megahal.ban "${SSH_USER}@${SSH_HOST}:~/svetse2/"
+
+          # Start the bot
+          $SSH "bash ~/svetse2/start-svetse2.sh" || true
 
           rm -f ~/.ssh/deploy_key
