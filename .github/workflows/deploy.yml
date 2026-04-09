@@ -21,29 +21,28 @@ jobs:
       - name: Test
         run: go test -count=1 ./...
 
-      - name: Deploy to server
-        env:
-          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
-          SSH_USER: ${{ secrets.DEPLOY_USER }}
-        run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>&1 || true
+      - name: Stop running bot
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: pkill -f svetse2-linux || true
 
-          SSH_OPTS="-i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
-          SSH="ssh $SSH_OPTS ${SSH_USER}@${SSH_HOST}"
-          SCP="scp $SSH_OPTS"
+      - name: Upload binary
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: "svetse2-linux,megahal.ban"
+          target: "~/svetse2/"
+          strip_components: 0
 
-          # Stop running process so binary can be overwritten
-          $SSH "pkill -f svetse2-linux || true"
-          sleep 2
-
-          # Upload new binary and ban list
-          $SCP svetse2-linux megahal.ban "${SSH_USER}@${SSH_HOST}:~/svetse2/"
-
-          # Start the bot
-          $SSH "bash ~/svetse2/start-svetse2.sh" || true
-
-          rm -f ~/.ssh/deploy_key
+      - name: Start bot
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: bash ~/svetse2/start-svetse2.sh
