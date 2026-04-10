@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"strings"
@@ -133,6 +135,9 @@ func runModelGoroutine(cfg Config, learnCh <-chan LearnRequest, replyCh <-chan R
 	saveTicker := time.NewTicker(cfg.SaveInterval)
 	defer saveTicker.Stop()
 
+	heartbeat := time.NewTicker(30 * time.Second)
+	defer heartbeat.Stop()
+
 	save := func() {
 		if err := saveBrain(cfg.BrainPath, model); err != nil {
 			log.Printf("Error saving brain: %v", err)
@@ -146,13 +151,27 @@ func runModelGoroutine(cfg Config, learnCh <-chan LearnRequest, replyCh <-chan R
 		case req := <-learnCh:
 			model.learn(req.Text)
 		case req := <-replyCh:
-			genCfg := applyOverrides(cfg.DefaultConfig, req.Overrides)
-			reply := model.generateReply(req.Text, ban, aux, swaps, genCfg)
-			req.ReplyCh <- reply
+			// Run reply generation in a goroutine with a hard timeout
+			// to prevent the model goroutine from blocking forever
+			done := make(chan string, 1)
+			go func() {
+				genCfg := applyOverrides(cfg.DefaultConfig, req.Overrides)
+				done <- model.generateReply(req.Text, ban, aux, swaps, genCfg)
+			}()
+			select {
+			case reply := <-done:
+				req.ReplyCh <- reply
+			case <-time.After(60 * time.Second):
+				req.ReplyCh <- "Brain timed out generating a reply."
+				log.Printf("WARNING: generateReply timed out for input %q", req.Text)
+			}
 		case req := <-helpCh:
 			req.ReplyCh <- helpText(cfg.DefaultConfig)
 		case req := <-trainCh:
 			req.ReplyCh <- handleTrain(model, req.URL)
+		case <-heartbeat.C:
+			log.Printf("heartbeat: dict=%d learnQ=%d/%d replyQ=%d/%d",
+				len(model.Dictionary), len(learnCh), cap(learnCh), len(replyCh), cap(replyCh))
 		case <-saveTicker.C:
 			save()
 		case <-quit:
@@ -180,6 +199,12 @@ func main() {
 	helpCh := make(chan HelpRequest, 10)
 	trainCh := make(chan TrainRequest, 5)
 	quit := make(chan struct{})
+
+	// pprof debug endpoint — ssh tunnel to inspect goroutine stacks when stuck
+	go func() {
+		log.Println("pprof listening on localhost:6060")
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
 
 	go runModelGoroutine(cfg, learnCh, replyCh, helpCh, trainCh, quit)
 
