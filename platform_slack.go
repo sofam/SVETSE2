@@ -73,7 +73,7 @@ func runSlack(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyReque
 				case *slackevents.AppMentionEvent:
 					log.Printf("Slack: AppMentionEvent user=%s text=%q channel=%s", ev.User, ev.Text, ev.Channel)
 
-					// Check channel allowlist
+					// Check channel allowlist (fast, do it before spawning goroutine)
 					if len(allowedChannels) > 0 && !allowedChannels[ev.Channel] {
 						info, err := api.GetConversationInfo(&slack.GetConversationInfoInput{
 							ChannelID: ev.Channel,
@@ -88,33 +88,36 @@ func runSlack(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyReque
 						}
 					}
 
-					text := cleanSlackText(ev.Text)
-					parsed := parseOverrides(text)
+					// Handle in a goroutine so the event loop stays responsive
+					go func(text, channel string) {
+						cleaned := cleanSlackText(text)
+						parsed := parseOverrides(cleaned)
 
-					if parsed.Help {
+						if parsed.Help {
+							rc := make(chan string, 1)
+							helpCh <- HelpRequest{ReplyCh: rc}
+							reply := <-rc
+							api.PostMessage(channel, slack.MsgOptionText(reply, false))
+							return
+						}
+
+						if parsed.TrainURL != "" {
+							rc := make(chan string, 1)
+							trainCh <- TrainRequest{URL: parsed.TrainURL, ReplyCh: rc}
+							reply := <-rc
+							api.PostMessage(channel, slack.MsgOptionText(reply, false))
+							return
+						}
+
+						if strings.TrimSpace(parsed.Text) == "" {
+							return
+						}
+
 						rc := make(chan string, 1)
-						helpCh <- HelpRequest{ReplyCh: rc}
+						replyCh <- ReplyRequest{Text: parsed.Text, Overrides: parsed.Overrides, ReplyCh: rc}
 						reply := <-rc
-						api.PostMessage(ev.Channel, slack.MsgOptionText(reply, false))
-						continue
-					}
-
-					if parsed.TrainURL != "" {
-						rc := make(chan string, 1)
-						trainCh <- TrainRequest{URL: parsed.TrainURL, ReplyCh: rc}
-						reply := <-rc
-						api.PostMessage(ev.Channel, slack.MsgOptionText(reply, false))
-						continue
-					}
-
-					if strings.TrimSpace(parsed.Text) == "" {
-						continue
-					}
-
-					rc := make(chan string, 1)
-					replyCh <- ReplyRequest{Text: parsed.Text, Overrides: parsed.Overrides, ReplyCh: rc}
-					reply := <-rc
-					api.PostMessage(ev.Channel, slack.MsgOptionText(reply, false))
+						api.PostMessage(channel, slack.MsgOptionText(reply, false))
+					}(ev.Text, ev.Channel)
 
 				default:
 					log.Printf("Slack: unhandled inner event type: %T", eventsAPIEvent.InnerEvent.Data)
