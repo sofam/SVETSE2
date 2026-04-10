@@ -5,6 +5,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
@@ -23,10 +24,7 @@ func cleanSlackText(text string) string {
 }
 
 func runSlack(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyRequest, helpCh chan<- HelpRequest, trainCh chan<- TrainRequest) {
-	api := slack.New(cfg.SlackToken, slack.OptionAppLevelToken(cfg.SlackAppToken))
-	client := socketmode.New(api, socketmode.OptionDebug(true), socketmode.OptionLog(log.New(os.Stderr, "socketmode: ", log.Lshortfile|log.LstdFlags)))
-
-	authResp, err := api.AuthTest()
+	authResp, err := slack.New(cfg.SlackToken).AuthTest()
 	if err != nil {
 		log.Fatalf("Slack auth failed: %v", err)
 	}
@@ -39,30 +37,35 @@ func runSlack(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyReque
 		allowedChannels[strings.TrimPrefix(ch, "#")] = true
 	}
 
+	for {
+		slackConnect(cfg, mentionTag, allowedChannels, learnCh, replyCh, helpCh, trainCh)
+		log.Printf("Slack: connection lost — reconnecting in 5s")
+		time.Sleep(5 * time.Second)
+	}
+}
+
+func slackConnect(cfg Config, mentionTag string, allowedChannels map[string]bool, learnCh chan<- LearnRequest, replyCh chan<- ReplyRequest, helpCh chan<- HelpRequest, trainCh chan<- TrainRequest) {
+	api := slack.New(cfg.SlackToken, slack.OptionAppLevelToken(cfg.SlackAppToken))
+	client := socketmode.New(api, socketmode.OptionDebug(true), socketmode.OptionLog(log.New(os.Stderr, "socketmode: ", log.Lshortfile|log.LstdFlags)))
+
 	go func() {
 		for evt := range client.Events {
-			log.Printf("Slack event: type=%s", evt.Type)
 			switch evt.Type {
 			case socketmode.EventTypeEventsAPI:
 				eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
 				if !ok {
-					log.Printf("Slack: failed to cast EventsAPI event")
 					continue
 				}
 				client.Ack(*evt.Request)
-				log.Printf("Slack: EventsAPI type=%s innerType=%s", eventsAPIEvent.Type, eventsAPIEvent.InnerEvent.Type)
 
 				switch ev := eventsAPIEvent.InnerEvent.Data.(type) {
 				case *slackevents.MessageEvent:
-					// Only use MessageEvent for learning from non-mention messages.
-					// Mentions are handled by AppMentionEvent to avoid double-processing.
 					if ev.BotID != "" || ev.SubType != "" {
 						continue
 					}
 					if strings.Contains(ev.Text, mentionTag) {
 						continue
 					}
-					// Skip quoted messages (blockquotes)
 					if strings.HasPrefix(ev.Text, "&gt;") || strings.HasPrefix(ev.Text, ">") {
 						continue
 					}
@@ -71,56 +74,18 @@ func runSlack(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyReque
 						learnCh <- LearnRequest{Text: cleaned}
 					}
 				case *slackevents.AppMentionEvent:
-					log.Printf("Slack: AppMentionEvent user=%s text=%q channel=%s", ev.User, ev.Text, ev.Channel)
+					log.Printf("Slack: mention user=%s channel=%s", ev.User, ev.Channel)
 
-					// Check channel allowlist (fast, do it before spawning goroutine)
 					if len(allowedChannels) > 0 && !allowedChannels[ev.Channel] {
 						info, err := api.GetConversationInfo(&slack.GetConversationInfoInput{
 							ChannelID: ev.Channel,
 						})
-						if err != nil {
-							log.Printf("Slack: GetConversationInfo failed for %s: %v", ev.Channel, err)
-							continue
-						}
-						if !allowedChannels[info.Name] {
-							log.Printf("Slack: channel %q (%s) not in allowlist", info.Name, ev.Channel)
+						if err != nil || !allowedChannels[info.Name] {
 							continue
 						}
 					}
 
-					// Handle in a goroutine so the event loop stays responsive
-					go func(text, channel string) {
-						cleaned := cleanSlackText(text)
-						parsed := parseOverrides(cleaned)
-
-						if parsed.Help {
-							rc := make(chan string, 1)
-							helpCh <- HelpRequest{ReplyCh: rc}
-							reply := <-rc
-							api.PostMessage(channel, slack.MsgOptionText(reply, false))
-							return
-						}
-
-						if parsed.TrainURL != "" {
-							rc := make(chan string, 1)
-							trainCh <- TrainRequest{URL: parsed.TrainURL, ReplyCh: rc}
-							reply := <-rc
-							api.PostMessage(channel, slack.MsgOptionText(reply, false))
-							return
-						}
-
-						if strings.TrimSpace(parsed.Text) == "" {
-							return
-						}
-
-						rc := make(chan string, 1)
-						replyCh <- ReplyRequest{Text: parsed.Text, Overrides: parsed.Overrides, ReplyCh: rc}
-						reply := <-rc
-						api.PostMessage(channel, slack.MsgOptionText(reply, false))
-					}(ev.Text, ev.Channel)
-
-				default:
-					log.Printf("Slack: unhandled inner event type: %T", eventsAPIEvent.InnerEvent.Data)
+					go handleSlackMention(api, ev.Text, ev.Channel, learnCh, replyCh, helpCh, trainCh)
 				}
 
 			case socketmode.EventTypeConnecting:
@@ -129,13 +94,51 @@ func runSlack(cfg Config, learnCh chan<- LearnRequest, replyCh chan<- ReplyReque
 				log.Println("Slack: connected")
 			case socketmode.EventTypeConnectionError:
 				log.Println("Slack: connection error")
-			default:
-				log.Printf("Slack: unhandled event type: %s", evt.Type)
 			}
 		}
+		log.Println("Slack: event channel closed")
 	}()
 
 	if err := client.Run(); err != nil {
-		log.Fatalf("Slack client error: %v", err)
+		log.Printf("Slack: client.Run error: %v", err)
+	}
+}
+
+func handleSlackMention(api *slack.Client, text, channel string, learnCh chan<- LearnRequest, replyCh chan<- ReplyRequest, helpCh chan<- HelpRequest, trainCh chan<- TrainRequest) {
+	cleaned := cleanSlackText(text)
+	parsed := parseOverrides(cleaned)
+
+	if parsed.Help {
+		rc := make(chan string, 1)
+		helpCh <- HelpRequest{ReplyCh: rc}
+		reply := <-rc
+		_, _, err := api.PostMessage(channel, slack.MsgOptionText(reply, false))
+		if err != nil {
+			log.Printf("Slack: PostMessage error: %v", err)
+		}
+		return
+	}
+
+	if parsed.TrainURL != "" {
+		rc := make(chan string, 1)
+		trainCh <- TrainRequest{URL: parsed.TrainURL, ReplyCh: rc}
+		reply := <-rc
+		_, _, err := api.PostMessage(channel, slack.MsgOptionText(reply, false))
+		if err != nil {
+			log.Printf("Slack: PostMessage error: %v", err)
+		}
+		return
+	}
+
+	if strings.TrimSpace(parsed.Text) == "" {
+		return
+	}
+
+	rc := make(chan string, 1)
+	replyCh <- ReplyRequest{Text: parsed.Text, Overrides: parsed.Overrides, ReplyCh: rc}
+	reply := <-rc
+	_, _, err := api.PostMessage(channel, slack.MsgOptionText(reply, false))
+	if err != nil {
+		log.Printf("Slack: PostMessage error: %v", err)
 	}
 }
